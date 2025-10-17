@@ -18,10 +18,14 @@ use std::{
     io::{self, BufRead},
     sync::mpsc,
     thread,
-    time::Duration,
 };
 
 const MAX_SAMPLES: usize = 128;
+
+enum AppEvent {
+    LogLine(String),
+    Input(Event),
+}
 
 #[derive(Deserialize)]
 struct JsonLatencyEvent<'a> {
@@ -178,19 +182,25 @@ impl App {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel::<AppEvent>();
 
-    thread::spawn(move || {
-        let stdin = io::stdin();
-        let reader = stdin.lock();
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if tx.send(line).is_err() {
-                    break;
+    {
+        let tx_lines = tx.clone();
+        thread::spawn(move || {
+            let stdin = io::stdin();
+            let reader = stdin.lock();
+            for line in reader.lines() {
+                match line {
+                    Ok(l) => {
+                        if tx_lines.send(AppEvent::LogLine(l)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
                 }
             }
-        }
-    });
+        });
+    }
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -198,11 +208,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    {
+        let tx_input = tx.clone();
+        thread::spawn(move || {
+            loop {
+                match event::read() {
+                    Ok(ev) => {
+                        if tx_input.send(AppEvent::Input(ev)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     let mut app = App::new();
 
-    loop {
-        while let Ok(line) = rx.try_recv() {
-            app.parse_log_line(line);
+    'main: loop {
+        let first = match rx.recv() {
+            Ok(ev) => ev,
+            Err(_) => break,
+        };
+
+        let mut quit = false;
+        match first {
+            AppEvent::LogLine(line) => app.parse_log_line(line),
+            AppEvent::Input(Event::Key(key)) => {
+                if key.code == KeyCode::Char('q') {
+                    quit = true;
+                }
+            }
+            AppEvent::Input(_) => {}
+        }
+        if quit {
+            break 'main;
+        }
+
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                AppEvent::LogLine(line) => app.parse_log_line(line),
+                AppEvent::Input(Event::Key(key)) => {
+                    if key.code == KeyCode::Char('q') {
+                        quit = true;
+                        break;
+                    }
+                }
+                AppEvent::Input(_) => {}
+            }
+        }
+        if quit {
+            break 'main;
         }
 
         if app.bar_cache_dirty {
@@ -267,14 +324,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             f.render_widget(errors_widget, chunks[2]);
         })?;
-
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    break;
-                }
-            }
-        }
     }
 
     disable_raw_mode()?;

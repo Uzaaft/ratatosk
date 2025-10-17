@@ -4,7 +4,8 @@ routes=("/api/users" "/api/posts" "/api/comments" "/api/auth" "/api/products")
 
 while true; do
     route=${routes[$RANDOM % ${#routes[@]}]}
-    latency=$((50 + RANDOM % 500))
+    jittery=$((RANDOM % 100))
+    latency=$((100 + jittery))
     
     echo "{\"route\":\"$route\",\"latency\":$latency}"
     
@@ -16,5 +17,4 @@ while true; do
         echo "WARN: Slow query detected on $route"
     fi
     
-    sleep 0.1
 done
