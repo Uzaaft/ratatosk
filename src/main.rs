@@ -112,7 +112,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let reader = stdin.lock();
         for line in reader.lines() {
             if let Ok(line) = line {
-                eprintln!("DEBUG: Received line: {}", line);
                 if tx.send(line).is_err() {
                     break;
                 }
