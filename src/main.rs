@@ -11,7 +11,9 @@ use ratatui::{
     text::Span,
     widgets::{BarChart, Block, Borders, List, ListItem},
 };
+use serde::Deserialize;
 use std::{
+    borrow::Cow,
     collections::{HashMap, VecDeque},
     io::{self, BufRead},
     sync::mpsc,
@@ -20,6 +22,27 @@ use std::{
 };
 
 const MAX_SAMPLES: usize = 128;
+
+#[derive(Deserialize)]
+struct JsonLatencyEvent<'a> {
+    #[serde(borrow)]
+    route: Option<Cow<'a, str>>,
+    latency: Option<u64>,
+}
+
+#[inline]
+fn likely_json_object(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b' ' | b'\t' | b'\n' | b'\r' => i += 1,
+            b'{' => return true,
+            _ => return false,
+        }
+    }
+    false
+}
 
 struct RouteStats {
     samples: VecDeque<u64>,
@@ -99,13 +122,12 @@ impl App {
             self.add_error(line.clone());
         }
 
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-            if let (Some(route), Some(latency)) = (
-                json.get("route").and_then(|r| r.as_str()),
-                json.get("latency").and_then(|l| l.as_u64()),
-            ) {
-                self.add_latency(route, latency);
-                return;
+        if likely_json_object(&line) {
+            if let Ok(evt) = serde_json::from_str::<JsonLatencyEvent>(&line) {
+                if let (Some(route), Some(latency)) = (evt.route.as_deref(), evt.latency) {
+                    self.add_latency(route, latency);
+                    return;
+                }
             }
         }
 
