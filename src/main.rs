@@ -199,13 +199,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .split(f.area());
 
             let max_trace_lines = chunks[0].height.saturating_sub(2) as usize;
-            let trace_items: Vec<ListItem> = app
-                .traces
-                .iter()
-                .rev()
-                .take(max_trace_lines)
-                .map(|t| ListItem::new(t.as_str()))
-                .collect();
+            let trace_capacity = max_trace_lines.min(app.traces.len());
+            let mut trace_items: Vec<ListItem> = Vec::with_capacity(trace_capacity);
+            for t in app.traces.iter().rev().take(trace_capacity) {
+                trace_items.push(ListItem::new(t.as_str()));
+            }
 
             let traces_widget = List::new(trace_items)
                 .block(Block::default().borders(Borders::ALL).title("Traces"));
@@ -226,20 +224,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             f.render_widget(barchart, chunks[1]);
 
             let max_error_lines = chunks[2].height.saturating_sub(2) as usize;
-            let error_items: Vec<ListItem> = app
-                .errors
-                .iter()
-                .rev()
-                .take(max_error_lines)
-                .map(|e| {
-                    let style = if e.contains("ERROR") {
-                        Style::default().fg(Color::Red)
-                    } else {
-                        Style::default().fg(Color::Yellow)
-                    };
-                    ListItem::new(Span::styled(e.as_str(), style))
-                })
-                .collect();
+            let error_capacity = max_error_lines.min(app.errors.len());
+            let mut error_items: Vec<ListItem> = Vec::with_capacity(error_capacity);
+            for e in app.errors.iter().rev().take(error_capacity) {
+                let style = if e.contains("ERROR") {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::Yellow)
+                };
+                error_items.push(ListItem::new(Span::styled(e.as_str(), style)));
+            }
 
             let errors_widget = List::new(error_items).block(
                 Block::default()
