@@ -54,6 +54,28 @@ fn likely_json_object(s: &str) -> bool {
     false
 }
 
+fn crop_str(s: &str, start_cols: usize, max_cols: usize) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    if start_cols == 0 && s.chars().count() <= max_cols {
+        return Cow::Borrowed(s);
+    }
+    let mut it = s.chars();
+    for _ in 0..start_cols {
+        if it.next().is_none() {
+            return Cow::Borrowed("");
+        }
+    }
+    let mut out = String::with_capacity(max_cols.min(64));
+    for _ in 0..max_cols {
+        if let Some(ch) = it.next() {
+            out.push(ch);
+        } else {
+            break;
+        }
+    }
+    Cow::Owned(out)
+}
+
 struct RouteStats {
     samples: VecDeque<u64>,
     sum: u128,
@@ -97,6 +119,12 @@ struct App {
     errors_scroll: usize,
     errors_view_rows: usize,
     selected_section: Section,
+    traces_h_scroll: usize,
+    traces_view_cols: usize,
+    traces_max_line_width: usize,
+    errors_h_scroll: usize,
+    errors_view_cols: usize,
+    errors_max_line_width: usize,
 }
 
 impl App {
@@ -112,6 +140,12 @@ impl App {
             errors_scroll: 0,
             errors_view_rows: 0,
             selected_section: Section::Traces,
+            traces_h_scroll: 0,
+            traces_view_cols: 0,
+            traces_max_line_width: 0,
+            errors_h_scroll: 0,
+            errors_view_cols: 0,
+            errors_max_line_width: 0,
         }
     }
 
@@ -207,6 +241,54 @@ impl App {
         }
     }
 
+    fn max_traces_h_scroll(&self) -> usize {
+        self.traces_max_line_width
+            .saturating_sub(self.traces_view_cols)
+    }
+
+    fn clamp_traces_h_scroll(&mut self) {
+        let max = self.max_traces_h_scroll();
+        if self.traces_h_scroll > max {
+            self.traces_h_scroll = max;
+        }
+    }
+
+    fn max_errors_h_scroll(&self) -> usize {
+        self.errors_max_line_width
+            .saturating_sub(self.errors_view_cols)
+    }
+
+    fn clamp_errors_h_scroll(&mut self) {
+        let max = self.max_errors_h_scroll();
+        if self.errors_h_scroll > max {
+            self.errors_h_scroll = max;
+        }
+    }
+
+    fn hscroll_left(&mut self) {
+        match self.selected_section {
+            Section::Traces => {
+                self.traces_h_scroll = self.traces_h_scroll.saturating_sub(1);
+            }
+            Section::Errors => {
+                self.errors_h_scroll = self.errors_h_scroll.saturating_sub(1);
+            }
+        }
+    }
+
+    fn hscroll_right(&mut self) {
+        match self.selected_section {
+            Section::Traces => {
+                let max_off = self.max_traces_h_scroll();
+                self.traces_h_scroll = (self.traces_h_scroll + 1).min(max_off);
+            }
+            Section::Errors => {
+                let max_off = self.max_errors_h_scroll();
+                self.errors_h_scroll = (self.errors_h_scroll + 1).min(max_off);
+            }
+        }
+    }
+
     fn toggle_section(&mut self) {
         self.selected_section = match self.selected_section {
             Section::Traces => Section::Errors,
@@ -219,10 +301,16 @@ impl App {
             KeyCode::Tab | KeyCode::BackTab => self.toggle_section(),
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),
+            KeyCode::Left => self.hscroll_left(),
+            KeyCode::Right => self.hscroll_right(),
             KeyCode::PageUp => self.page_up(),
             KeyCode::PageDown => self.page_down(),
             KeyCode::Home => self.to_home(),
             KeyCode::End => self.to_end(),
+            KeyCode::Char('j') => self.scroll_down(),
+            KeyCode::Char('k') => self.scroll_up(),
+            KeyCode::Char('h') => self.hscroll_left(),
+            KeyCode::Char('l') => self.hscroll_right(),
             _ => {}
         }
     }
@@ -410,9 +498,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.traces_view_rows = max_trace_lines;
             app.clamp_traces_scroll();
 
+            app.traces_view_cols = chunks[0].width.saturating_sub(2) as usize;
+            app.traces_max_line_width = app
+                .traces
+                .iter()
+                .map(|s| s.chars().count())
+                .max()
+                .unwrap_or(0);
+            app.clamp_traces_h_scroll();
+
             let max_error_lines = chunks[2].height.saturating_sub(2) as usize;
             app.errors_view_rows = max_error_lines;
             app.clamp_errors_scroll();
+
+            app.errors_view_cols = chunks[2].width.saturating_sub(2) as usize;
+            app.errors_max_line_width = app
+                .errors
+                .iter()
+                .map(|s| s.chars().count())
+                .max()
+                .unwrap_or(0);
+            app.clamp_errors_h_scroll();
 
             let mut trace_items: Vec<ListItem> =
                 Vec::with_capacity(max_trace_lines.min(app.traces.len()));
@@ -423,7 +529,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .skip(app.traces_scroll)
                 .take(app.traces_view_rows)
             {
-                trace_items.push(ListItem::new(t.as_str()));
+                let cropped = crop_str(t, app.traces_h_scroll, app.traces_view_cols);
+                trace_items.push(ListItem::new(cropped.to_string()));
             }
 
             let traces_focused = app.selected_section == Section::Traces;
@@ -440,7 +547,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Style::default().fg(Color::DarkGray)
                 })
                 .title(if traces_focused {
-                    "Traces (focused) — Tab to switch (↑/↓ PgUp/PgDn Home/End)"
+                    "Traces (focused) — Tab to switch (↑/↓ PgUp/PgDn Home/End, h/j/k/l)"
                 } else {
                     "Traces — Tab to switch"
                 });
@@ -480,7 +587,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     Style::default().fg(Color::Yellow)
                 };
-                error_items.push(ListItem::new(Span::styled(e.as_str(), style)));
+                let cropped = crop_str(e, app.errors_h_scroll, app.errors_view_cols);
+                error_items.push(ListItem::new(Span::styled(cropped.to_string(), style)));
             }
 
             let errors_focused = app.selected_section == Section::Errors;
@@ -497,7 +605,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Style::default().fg(Color::DarkGray)
                 })
                 .title(if errors_focused {
-                    "Errors / Warnings (focused) — Tab to switch (↑/↓ PgUp/PgDn Home/End)"
+                    "Errors / Warnings (focused) — Tab to switch (↑/↓ PgUp/PgDn Home/End, h/j/k/l)"
                 } else {
                     "Errors / Warnings — Tab to switch"
                 });
