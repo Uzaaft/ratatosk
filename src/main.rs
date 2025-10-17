@@ -80,6 +80,8 @@ struct App {
     traces: VecDeque<String>,
     latencies: HashMap<String, RouteStats>,
     errors: VecDeque<String>,
+    bar_cache_dirty: bool,
+    cached_bar_data: Vec<(String, u64)>,
 }
 
 impl App {
@@ -88,6 +90,8 @@ impl App {
             traces: VecDeque::with_capacity(1000),
             latencies: HashMap::new(),
             errors: VecDeque::with_capacity(500),
+            bar_cache_dirty: true,
+            cached_bar_data: Vec::new(),
         }
     }
 
@@ -106,6 +110,7 @@ impl App {
             stats.add(latency);
             self.latencies.insert(route.to_owned(), stats);
         }
+        self.bar_cache_dirty = true;
     }
 
     fn add_error(&mut self, error: String) {
@@ -148,15 +153,18 @@ impl App {
         }
     }
 
-    fn get_avg_latencies(&self) -> Vec<(&str, u64)> {
-        let mut result: Vec<_> = self
+    fn recompute_bar_cache(&mut self) {
+        let mut data: Vec<(String, u64)> = self
             .latencies
             .iter()
-            .map(|(route, stats)| (route.as_str(), stats.average()))
+            .map(|(route, stats)| (route.clone(), stats.average()))
             .collect();
-        result.sort_by_key(|&(_, avg)| std::cmp::Reverse(avg));
-        result.truncate(10);
-        result
+
+        data.sort_by_key(|&(_, avg)| std::cmp::Reverse(avg));
+        data.truncate(10);
+
+        self.cached_bar_data = data;
+        self.bar_cache_dirty = false;
     }
 }
 
@@ -188,6 +196,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.parse_log_line(line);
         }
 
+        if app.bar_cache_dirty {
+            app.recompute_bar_cache();
+        }
+
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -209,7 +221,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .block(Block::default().borders(Borders::ALL).title("Traces"));
             f.render_widget(traces_widget, chunks[0]);
 
-            let bar_data = app.get_avg_latencies();
+            let bar_data: Vec<(&str, u64)> = app
+                .cached_bar_data
+                .iter()
+                .map(|(route, avg)| (route.as_str(), *avg))
+                .collect();
 
             let barchart = BarChart::default()
                 .block(
