@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{BarChart, Block, Borders, List, ListItem},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::{self, BufRead},
     sync::mpsc,
     thread,
@@ -20,25 +20,25 @@ use std::{
 };
 
 struct App {
-    traces: Vec<String>,
+    traces: VecDeque<String>,
     latencies: HashMap<String, Vec<u64>>,
-    errors: Vec<String>,
+    errors: VecDeque<String>,
 }
 
 impl App {
     fn new() -> Self {
         Self {
-            traces: Vec::new(),
+            traces: VecDeque::with_capacity(1000),
             latencies: HashMap::new(),
-            errors: Vec::new(),
+            errors: VecDeque::with_capacity(500),
         }
     }
 
     fn add_trace(&mut self, line: String) {
-        if self.traces.len() >= 1000 {
-            self.traces.remove(0);
+        if self.traces.len() == 1000 {
+            self.traces.pop_front();
         }
-        self.traces.push(line);
+        self.traces.push_back(line);
     }
 
     fn add_latency(&mut self, route: String, latency: u64) {
@@ -49,10 +49,10 @@ impl App {
     }
 
     fn add_error(&mut self, error: String) {
-        if self.errors.len() >= 500 {
-            self.errors.remove(0);
+        if self.errors.len() == 500 {
+            self.errors.pop_front();
         }
-        self.errors.push(error);
+        self.errors.push_back(error);
     }
 
     fn parse_log_line(&mut self, line: String) {
