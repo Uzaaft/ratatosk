@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::Span,
-    widgets::{BarChart, Block, Borders, List, ListItem},
+    widgets::{BarChart, Block, BorderType, Borders, List, ListItem},
 };
 use serde::Deserialize;
 use std::{
@@ -25,6 +25,12 @@ const MAX_SAMPLES: usize = 128;
 enum AppEvent {
     LogLine(String),
     Input(Event),
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum Section {
+    Traces,
+    Errors,
 }
 
 #[derive(Deserialize)]
@@ -88,6 +94,9 @@ struct App {
     cached_bar_data: Vec<(String, u64)>,
     traces_scroll: usize,
     traces_view_rows: usize,
+    errors_scroll: usize,
+    errors_view_rows: usize,
+    selected_section: Section,
 }
 
 impl App {
@@ -100,6 +109,9 @@ impl App {
             cached_bar_data: Vec::new(),
             traces_scroll: 0,
             traces_view_rows: 0,
+            errors_scroll: 0,
+            errors_view_rows: 0,
+            selected_section: Section::Traces,
         }
     }
 
@@ -111,6 +123,107 @@ impl App {
         let max_off = self.max_traces_scroll();
         if self.traces_scroll > max_off {
             self.traces_scroll = max_off;
+        }
+    }
+
+    fn max_errors_scroll(&self) -> usize {
+        self.errors.len().saturating_sub(self.errors_view_rows)
+    }
+
+    fn clamp_errors_scroll(&mut self) {
+        let max_off = self.max_errors_scroll();
+        if self.errors_scroll > max_off {
+            self.errors_scroll = max_off;
+        }
+    }
+
+    fn scroll_up(&mut self) {
+        match self.selected_section {
+            Section::Traces => {
+                let max_off = self.max_traces_scroll();
+                self.traces_scroll = (self.traces_scroll + 1).min(max_off);
+            }
+            Section::Errors => {
+                let max_off = self.max_errors_scroll();
+                self.errors_scroll = (self.errors_scroll + 1).min(max_off);
+            }
+        }
+    }
+
+    fn scroll_down(&mut self) {
+        match self.selected_section {
+            Section::Traces => {
+                self.traces_scroll = self.traces_scroll.saturating_sub(1);
+            }
+            Section::Errors => {
+                self.errors_scroll = self.errors_scroll.saturating_sub(1);
+            }
+        }
+    }
+
+    fn page_up(&mut self) {
+        let page = match self.selected_section {
+            Section::Traces => self.traces_view_rows.saturating_sub(1).max(1),
+            Section::Errors => self.errors_view_rows.saturating_sub(1).max(1),
+        };
+        match self.selected_section {
+            Section::Traces => {
+                let max_off = self.max_traces_scroll();
+                self.traces_scroll = (self.traces_scroll + page).min(max_off);
+            }
+            Section::Errors => {
+                let max_off = self.max_errors_scroll();
+                self.errors_scroll = (self.errors_scroll + page).min(max_off);
+            }
+        }
+    }
+
+    fn page_down(&mut self) {
+        let page = match self.selected_section {
+            Section::Traces => self.traces_view_rows.saturating_sub(1).max(1),
+            Section::Errors => self.errors_view_rows.saturating_sub(1).max(1),
+        };
+        match self.selected_section {
+            Section::Traces => {
+                self.traces_scroll = self.traces_scroll.saturating_sub(page);
+            }
+            Section::Errors => {
+                self.errors_scroll = self.errors_scroll.saturating_sub(page);
+            }
+        }
+    }
+
+    fn to_home(&mut self) {
+        match self.selected_section {
+            Section::Traces => self.traces_scroll = 0,
+            Section::Errors => self.errors_scroll = 0,
+        }
+    }
+
+    fn to_end(&mut self) {
+        match self.selected_section {
+            Section::Traces => self.traces_scroll = self.max_traces_scroll(),
+            Section::Errors => self.errors_scroll = self.max_errors_scroll(),
+        }
+    }
+
+    fn toggle_section(&mut self) {
+        self.selected_section = match self.selected_section {
+            Section::Traces => Section::Errors,
+            Section::Errors => Section::Traces,
+        };
+    }
+
+    fn handle_nav_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Tab | KeyCode::BackTab => self.toggle_section(),
+            KeyCode::Up => self.scroll_up(),
+            KeyCode::Down => self.scroll_down(),
+            KeyCode::PageUp => self.page_up(),
+            KeyCode::PageDown => self.page_down(),
+            KeyCode::Home => self.to_home(),
+            KeyCode::End => self.to_end(),
+            _ => {}
         }
     }
 
@@ -138,6 +251,7 @@ impl App {
             self.errors.pop_front();
         }
         self.errors.push_back(error);
+        self.clamp_errors_scroll();
     }
 
     fn parse_log_line(&mut self, line: String) {
@@ -251,34 +365,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut quit = false;
         match first {
             AppEvent::LogLine(line) => app.parse_log_line(line),
-            AppEvent::Input(Event::Key(key)) => {
-                match key.code {
-                    KeyCode::Char('q') => quit = true,
-                    KeyCode::Up => {
-                        let max_off = app.max_traces_scroll();
-                        app.traces_scroll = (app.traces_scroll + 1).min(max_off);
-                    }
-                    KeyCode::Down => {
-                        app.traces_scroll = app.traces_scroll.saturating_sub(1);
-                    }
-                    KeyCode::PageUp => {
-                        let page = app.traces_view_rows.saturating_sub(1).max(1);
-                        let max_off = app.max_traces_scroll();
-                        app.traces_scroll = (app.traces_scroll + page).min(max_off);
-                    }
-                    KeyCode::PageDown => {
-                        let page = app.traces_view_rows.saturating_sub(1).max(1);
-                        app.traces_scroll = app.traces_scroll.saturating_sub(page);
-                    }
-                    KeyCode::Home => {
-                        app.traces_scroll = 0;
-                    }
-                    KeyCode::End => {
-                        app.traces_scroll = app.max_traces_scroll();
-                    }
-                    _ => {}
-                }
-            }
+            AppEvent::Input(Event::Key(key)) => match key.code {
+                KeyCode::Char('q') => quit = true,
+                other => app.handle_nav_key(other),
+            },
             AppEvent::Input(_) => {}
         }
         if quit {
@@ -288,37 +378,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(ev) = rx.try_recv() {
             match ev {
                 AppEvent::LogLine(line) => app.parse_log_line(line),
-                AppEvent::Input(Event::Key(key)) => {
-                    match key.code {
-                        KeyCode::Char('q') => {
-                            quit = true;
-                            break;
-                        }
-                        KeyCode::Up => {
-                            let max_off = app.max_traces_scroll();
-                            app.traces_scroll = (app.traces_scroll + 1).min(max_off);
-                        }
-                        KeyCode::Down => {
-                            app.traces_scroll = app.traces_scroll.saturating_sub(1);
-                        }
-                        KeyCode::PageUp => {
-                            let page = app.traces_view_rows.saturating_sub(1).max(1);
-                            let max_off = app.max_traces_scroll();
-                            app.traces_scroll = (app.traces_scroll + page).min(max_off);
-                        }
-                        KeyCode::PageDown => {
-                            let page = app.traces_view_rows.saturating_sub(1).max(1);
-                            app.traces_scroll = app.traces_scroll.saturating_sub(page);
-                        }
-                        KeyCode::Home => {
-                            app.traces_scroll = 0;
-                        }
-                        KeyCode::End => {
-                            app.traces_scroll = app.max_traces_scroll();
-                        }
-                        _ => {}
+                AppEvent::Input(Event::Key(key)) => match key.code {
+                    KeyCode::Char('q') => {
+                        quit = true;
+                        break;
                     }
-                }
+                    other => app.handle_nav_key(other),
+                },
                 AppEvent::Input(_) => {}
             }
         }
@@ -344,6 +410,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.traces_view_rows = max_trace_lines;
             app.clamp_traces_scroll();
 
+            let max_error_lines = chunks[2].height.saturating_sub(2) as usize;
+            app.errors_view_rows = max_error_lines;
+            app.clamp_errors_scroll();
+
             let mut trace_items: Vec<ListItem> =
                 Vec::with_capacity(max_trace_lines.min(app.traces.len()));
             for t in app
@@ -356,11 +426,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 trace_items.push(ListItem::new(t.as_str()));
             }
 
-            let traces_widget = List::new(trace_items).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Traces (↑/↓ PgUp/PgDn Home/End)"),
-            );
+            let traces_focused = app.selected_section == Section::Traces;
+            let traces_block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(if traces_focused {
+                    BorderType::Thick
+                } else {
+                    BorderType::Plain
+                })
+                .border_style(if traces_focused {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                })
+                .title(if traces_focused {
+                    "Traces (focused) — Tab to switch (↑/↓ PgUp/PgDn Home/End)"
+                } else {
+                    "Traces — Tab to switch"
+                });
+
+            let traces_widget = List::new(trace_items).block(traces_block);
             f.render_widget(traces_widget, chunks[0]);
 
             let bar_data: Vec<(&str, u64)> = app
@@ -381,10 +466,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .value_style(Style::default().fg(Color::White));
             f.render_widget(barchart, chunks[1]);
 
-            let max_error_lines = chunks[2].height.saturating_sub(2) as usize;
-            let error_capacity = max_error_lines.min(app.errors.len());
-            let mut error_items: Vec<ListItem> = Vec::with_capacity(error_capacity);
-            for e in app.errors.iter().rev().take(error_capacity) {
+            let mut error_items: Vec<ListItem> =
+                Vec::with_capacity(app.errors_view_rows.min(app.errors.len()));
+            for e in app
+                .errors
+                .iter()
+                .rev()
+                .skip(app.errors_scroll)
+                .take(app.errors_view_rows)
+            {
                 let style = if e.contains("ERROR") {
                     Style::default().fg(Color::Red)
                 } else {
@@ -393,11 +483,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 error_items.push(ListItem::new(Span::styled(e.as_str(), style)));
             }
 
-            let errors_widget = List::new(error_items).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Errors / Warnings"),
-            );
+            let errors_focused = app.selected_section == Section::Errors;
+            let errors_block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(if errors_focused {
+                    BorderType::Thick
+                } else {
+                    BorderType::Plain
+                })
+                .border_style(if errors_focused {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                })
+                .title(if errors_focused {
+                    "Errors / Warnings (focused) — Tab to switch (↑/↓ PgUp/PgDn Home/End)"
+                } else {
+                    "Errors / Warnings — Tab to switch"
+                });
+
+            let errors_widget = List::new(error_items).block(errors_block);
             f.render_widget(errors_widget, chunks[2]);
         })?;
     }
