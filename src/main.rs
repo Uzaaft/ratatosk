@@ -19,9 +19,43 @@ use std::{
     time::Duration,
 };
 
+const MAX_SAMPLES: usize = 128;
+
+struct RouteStats {
+    samples: VecDeque<u64>,
+    sum: u128,
+}
+
+impl RouteStats {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            samples: VecDeque::with_capacity(cap),
+            sum: 0,
+        }
+    }
+
+    fn add(&mut self, latency: u64) {
+        if self.samples.len() == MAX_SAMPLES {
+            if let Some(old) = self.samples.pop_front() {
+                self.sum -= old as u128;
+            }
+        }
+        self.samples.push_back(latency);
+        self.sum += latency as u128;
+    }
+
+    fn average(&self) -> u64 {
+        if self.samples.is_empty() {
+            0
+        } else {
+            (self.sum / (self.samples.len() as u128)) as u64
+        }
+    }
+}
+
 struct App {
     traces: VecDeque<String>,
-    latencies: HashMap<String, Vec<u64>>,
+    latencies: HashMap<String, RouteStats>,
     errors: VecDeque<String>,
 }
 
@@ -41,11 +75,14 @@ impl App {
         self.traces.push_back(line);
     }
 
-    fn add_latency(&mut self, route: String, latency: u64) {
-        self.latencies
-            .entry(route)
-            .or_insert_with(Vec::new)
-            .push(latency);
+    fn add_latency(&mut self, route: &str, latency: u64) {
+        if let Some(stats) = self.latencies.get_mut(route) {
+            stats.add(latency);
+        } else {
+            let mut stats = RouteStats::with_capacity(MAX_SAMPLES);
+            stats.add(latency);
+            self.latencies.insert(route.to_owned(), stats);
+        }
     }
 
     fn add_error(&mut self, error: String) {
@@ -67,7 +104,7 @@ impl App {
                 json.get("route").and_then(|r| r.as_str()),
                 json.get("latency").and_then(|l| l.as_u64()),
             ) {
-                self.add_latency(route.to_string(), latency);
+                self.add_latency(route, latency);
                 return;
             }
         }
@@ -83,7 +120,7 @@ impl App {
                     .find(|c: char| !c.is_numeric())
                     .unwrap_or(lat_str.len());
                 if let Ok(latency) = lat_str[..end].parse() {
-                    self.add_latency(route.to_string(), latency);
+                    self.add_latency(route, latency);
                 }
             }
         }
@@ -93,10 +130,7 @@ impl App {
         let mut result: Vec<_> = self
             .latencies
             .iter()
-            .map(|(route, lats)| {
-                let avg = lats.iter().sum::<u64>() / lats.len() as u64;
-                (route.as_str(), avg)
-            })
+            .map(|(route, stats)| (route.as_str(), stats.average()))
             .collect();
         result.sort_by_key(|&(_, avg)| std::cmp::Reverse(avg));
         result.truncate(10);
