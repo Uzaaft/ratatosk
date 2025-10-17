@@ -8,7 +8,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    text::{Line, Span},
+    text::Span,
     widgets::{BarChart, Block, Borders, List, ListItem},
 };
 use std::{
@@ -142,12 +142,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ])
                 .split(f.area());
 
+            let max_trace_lines = chunks[0].height.saturating_sub(2) as usize;
             let trace_items: Vec<ListItem> = app
                 .traces
                 .iter()
                 .rev()
-                .take(chunks[0].height as usize - 2)
-                .map(|t| ListItem::new(Line::from(t.clone())))
+                .take(max_trace_lines)
+                .map(|t| ListItem::new(t.as_str()))
                 .collect();
 
             let traces_widget = List::new(trace_items)
@@ -168,21 +169,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .value_style(Style::default().fg(Color::White));
             f.render_widget(barchart, chunks[1]);
 
+            let max_error_lines = chunks[2].height.saturating_sub(2) as usize;
             let error_items: Vec<ListItem> = app
                 .errors
                 .iter()
                 .rev()
-                .take(chunks[2].height as usize - 2)
+                .take(max_error_lines)
                 .map(|e| {
-                    let color = if e.contains("ERROR") {
-                        Color::Red
+                    let style = if e.contains("ERROR") {
+                        Style::default().fg(Color::Red)
                     } else {
-                        Color::Yellow
+                        Style::default().fg(Color::Yellow)
                     };
-                    ListItem::new(Line::from(Span::styled(
-                        e.clone(),
-                        Style::default().fg(color),
-                    )))
+                    ListItem::new(Span::styled(e.as_str(), style))
                 })
                 .collect();
 
