@@ -86,6 +86,8 @@ struct App {
     errors: VecDeque<String>,
     bar_cache_dirty: bool,
     cached_bar_data: Vec<(String, u64)>,
+    traces_scroll: usize,
+    traces_view_rows: usize,
 }
 
 impl App {
@@ -96,6 +98,19 @@ impl App {
             errors: VecDeque::with_capacity(500),
             bar_cache_dirty: true,
             cached_bar_data: Vec::new(),
+            traces_scroll: 0,
+            traces_view_rows: 0,
+        }
+    }
+
+    fn max_traces_scroll(&self) -> usize {
+        self.traces.len().saturating_sub(self.traces_view_rows)
+    }
+
+    fn clamp_traces_scroll(&mut self) {
+        let max_off = self.max_traces_scroll();
+        if self.traces_scroll > max_off {
+            self.traces_scroll = max_off;
         }
     }
 
@@ -104,6 +119,7 @@ impl App {
             self.traces.pop_front();
         }
         self.traces.push_back(line);
+        self.clamp_traces_scroll();
     }
 
     fn add_latency(&mut self, route: &str, latency: u64) {
@@ -236,8 +252,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match first {
             AppEvent::LogLine(line) => app.parse_log_line(line),
             AppEvent::Input(Event::Key(key)) => {
-                if key.code == KeyCode::Char('q') {
-                    quit = true;
+                match key.code {
+                    KeyCode::Char('q') => quit = true,
+                    KeyCode::Up => {
+                        let max_off = app.max_traces_scroll();
+                        app.traces_scroll = (app.traces_scroll + 1).min(max_off);
+                    }
+                    KeyCode::Down => {
+                        app.traces_scroll = app.traces_scroll.saturating_sub(1);
+                    }
+                    KeyCode::PageUp => {
+                        let page = app.traces_view_rows.saturating_sub(1).max(1);
+                        let max_off = app.max_traces_scroll();
+                        app.traces_scroll = (app.traces_scroll + page).min(max_off);
+                    }
+                    KeyCode::PageDown => {
+                        let page = app.traces_view_rows.saturating_sub(1).max(1);
+                        app.traces_scroll = app.traces_scroll.saturating_sub(page);
+                    }
+                    KeyCode::Home => {
+                        app.traces_scroll = 0;
+                    }
+                    KeyCode::End => {
+                        app.traces_scroll = app.max_traces_scroll();
+                    }
+                    _ => {}
                 }
             }
             AppEvent::Input(_) => {}
@@ -250,9 +289,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match ev {
                 AppEvent::LogLine(line) => app.parse_log_line(line),
                 AppEvent::Input(Event::Key(key)) => {
-                    if key.code == KeyCode::Char('q') {
-                        quit = true;
-                        break;
+                    match key.code {
+                        KeyCode::Char('q') => {
+                            quit = true;
+                            break;
+                        }
+                        KeyCode::Up => {
+                            let max_off = app.max_traces_scroll();
+                            app.traces_scroll = (app.traces_scroll + 1).min(max_off);
+                        }
+                        KeyCode::Down => {
+                            app.traces_scroll = app.traces_scroll.saturating_sub(1);
+                        }
+                        KeyCode::PageUp => {
+                            let page = app.traces_view_rows.saturating_sub(1).max(1);
+                            let max_off = app.max_traces_scroll();
+                            app.traces_scroll = (app.traces_scroll + page).min(max_off);
+                        }
+                        KeyCode::PageDown => {
+                            let page = app.traces_view_rows.saturating_sub(1).max(1);
+                            app.traces_scroll = app.traces_scroll.saturating_sub(page);
+                        }
+                        KeyCode::Home => {
+                            app.traces_scroll = 0;
+                        }
+                        KeyCode::End => {
+                            app.traces_scroll = app.max_traces_scroll();
+                        }
+                        _ => {}
                     }
                 }
                 AppEvent::Input(_) => {}
@@ -277,14 +341,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .split(f.area());
 
             let max_trace_lines = chunks[0].height.saturating_sub(2) as usize;
-            let trace_capacity = max_trace_lines.min(app.traces.len());
-            let mut trace_items: Vec<ListItem> = Vec::with_capacity(trace_capacity);
-            for t in app.traces.iter().rev().take(trace_capacity) {
+            app.traces_view_rows = max_trace_lines;
+            app.clamp_traces_scroll();
+
+            let mut trace_items: Vec<ListItem> =
+                Vec::with_capacity(max_trace_lines.min(app.traces.len()));
+            for t in app
+                .traces
+                .iter()
+                .rev()
+                .skip(app.traces_scroll)
+                .take(app.traces_view_rows)
+            {
                 trace_items.push(ListItem::new(t.as_str()));
             }
 
-            let traces_widget = List::new(trace_items)
-                .block(Block::default().borders(Borders::ALL).title("Traces"));
+            let traces_widget = List::new(trace_items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Traces (↑/↓ PgUp/PgDn Home/End)"),
+            );
             f.render_widget(traces_widget, chunks[0]);
 
             let bar_data: Vec<(&str, u64)> = app
