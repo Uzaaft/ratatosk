@@ -154,16 +154,25 @@ impl App {
     }
 
     fn recompute_bar_cache(&mut self) {
-        let mut data: Vec<(String, u64)> = self
+        let mut items: Vec<(&str, u64)> = self
             .latencies
             .iter()
-            .map(|(route, stats)| (route.clone(), stats.average()))
+            .map(|(route, stats)| (route.as_str(), stats.average()))
             .collect();
 
-        data.sort_by_key(|&(_, avg)| std::cmp::Reverse(avg));
-        data.truncate(10);
+        if items.len() <= 10 {
+            items.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        } else {
+            let (top, _, _) = items.select_nth_unstable_by_key(10, |x| std::cmp::Reverse(x.1));
+            top.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            items.truncate(10);
+        }
 
-        self.cached_bar_data = data;
+        self.cached_bar_data = items
+            .into_iter()
+            .map(|(route, avg)| (route.to_owned(), avg))
+            .collect();
+
         self.bar_cache_dirty = false;
     }
 }
