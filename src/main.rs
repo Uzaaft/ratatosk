@@ -3,7 +3,7 @@ mod config;
 use clap::Parser;
 use config::FieldConfig;
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -330,17 +330,26 @@ impl App {
     }
 
     fn handle_nav_key(&mut self, code: KeyCode) {
-        if self.show_help {
-            match code {
-                KeyCode::Char('?') | KeyCode::Esc => self.show_help = false,
-                _ => {}
+        // Handle '?' to toggle help (do this BEFORE checking show_help)
+        match code {
+            KeyCode::Char('?') => {
+                self.show_help = !self.show_help;
+                return;
             }
+            KeyCode::Esc if self.show_help => {
+                self.show_help = false;
+                return;
+            }
+            _ => {}
+        }
+
+        // If help is showing, don't process other keys
+        if self.show_help {
             return;
         }
 
         match code {
-            KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Char('c') => self.open_config(),
+            KeyCode::Char('c') | KeyCode::Char('C') => self.open_config(),
             KeyCode::Tab | KeyCode::BackTab => self.toggle_section(),
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),
@@ -350,10 +359,10 @@ impl App {
             KeyCode::PageDown => self.page_down(),
             KeyCode::Home => self.to_home(),
             KeyCode::End => self.to_end(),
-            KeyCode::Char('j') => self.scroll_down(),
-            KeyCode::Char('k') => self.scroll_up(),
-            KeyCode::Char('h') => self.hscroll_left(),
-            KeyCode::Char('l') => self.hscroll_right(),
+            KeyCode::Char('j') | KeyCode::Char('J') => self.scroll_down(),
+            KeyCode::Char('k') | KeyCode::Char('K') => self.scroll_up(),
+            KeyCode::Char('h') | KeyCode::Char('H') => self.hscroll_left(),
+            KeyCode::Char('l') | KeyCode::Char('L') => self.hscroll_right(),
             _ => {}
         }
     }
@@ -772,13 +781,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut quit = false;
         match first {
             AppEvent::LogLine(line) => app.parse_log_line(line),
-            AppEvent::Input(Event::Key(key)) => match key.code {
-                KeyCode::Char('q') if !app.show_config => quit = true,
-                other => {
-                    if app.show_config {
-                        app.handle_config_key(other);
-                    } else {
-                        app.handle_nav_key(other);
+            AppEvent::Input(Event::Key(key)) => {
+                // Only handle Press events (ignore Release and Repeat)
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                
+                // Only skip if CONTROL or ALT (but not SHIFT alone)
+                let has_ctrl_or_alt = key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+                
+                if !has_ctrl_or_alt {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Char('Q') if !app.show_config => quit = true,
+                        other => {
+                            if app.show_config {
+                                app.handle_config_key(other);
+                            } else {
+                                app.handle_nav_key(other);
+                            }
+                        }
                     }
                 }
             },
@@ -791,16 +812,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(ev) = rx.try_recv() {
             match ev {
                 AppEvent::LogLine(line) => app.parse_log_line(line),
-                AppEvent::Input(Event::Key(key)) => match key.code {
-                    KeyCode::Char('q') if !app.show_config => {
-                        quit = true;
-                        break;
+                AppEvent::Input(Event::Key(key)) => {
+                    // Only handle Press events (ignore Release and Repeat)
+                    if key.kind != KeyEventKind::Press {
+                        continue;
                     }
-                    other => {
-                        if app.show_config {
-                            app.handle_config_key(other);
-                        } else {
-                            app.handle_nav_key(other);
+                    
+                    // Only skip if CONTROL or ALT (but not SHIFT alone)
+                    let has_ctrl_or_alt = key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+                    
+                    if !has_ctrl_or_alt {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Char('Q') if !app.show_config => {
+                                quit = true;
+                                break;
+                            }
+                            other => {
+                                if app.show_config {
+                                    app.handle_config_key(other);
+                                } else {
+                                    app.handle_nav_key(other);
+                                }
+                            }
                         }
                     }
                 },
