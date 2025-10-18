@@ -1,5 +1,6 @@
 mod config;
 
+use clap::Parser;
 use config::FieldConfig;
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -9,10 +10,10 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect, Alignment},
     style::{Color, Style},
-    text::Span,
-    widgets::{BarChart, Block, BorderType, Borders, List, ListItem},
+    text::{Span, Line},
+    widgets::{BarChart, Block, BorderType, Borders, List, ListItem, Paragraph, Clear},
 };
 
 use std::{
@@ -23,6 +24,14 @@ use std::{
 };
 
 const MAX_SAMPLES: usize = 128;
+#[derive(Parser)]
+#[command(name = "ratatosk")]
+#[command(version, about = "A TUI log monitoring application", long_about = None)]
+struct Cli {
+    #[arg(short, long, value_name = "FILE", help = "Path to config file")]
+    config: Option<String>,
+}
+
 
 enum AppEvent {
     LogLine(String),
@@ -123,6 +132,7 @@ struct App {
     errors_h_scroll: usize,
     errors_view_cols: usize,
     errors_max_line_width: usize,
+    show_help: bool,
 }
 
 impl App {
@@ -145,6 +155,7 @@ impl App {
             errors_h_scroll: 0,
             errors_view_cols: 0,
             errors_max_line_width: 0,
+            show_help: false,
         }
     }
 
@@ -296,7 +307,16 @@ impl App {
     }
 
     fn handle_nav_key(&mut self, code: KeyCode) {
+        if self.show_help {
+            match code {
+                KeyCode::Char('?') | KeyCode::Esc => self.show_help = false,
+                _ => {}
+            }
+            return;
+        }
+
         match code {
+            KeyCode::Char('?') => self.show_help = true,
             KeyCode::Tab | KeyCode::BackTab => self.toggle_section(),
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),
@@ -405,7 +425,29 @@ impl App {
     }
 }
 
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+
     let (tx, rx) = mpsc::channel::<AppEvent>();
 
     {
@@ -448,7 +490,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let cfg = config::load();
+    let cfg = config::load(cli.config.as_deref());
     let mut app = App::new(cfg);
 
     'main: loop {
@@ -627,6 +669,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let errors_widget = List::new(error_items).block(errors_block);
             f.render_widget(errors_widget, chunks[2]);
+
+            if app.show_help {
+                let help_text = vec![
+                    Line::from(""),
+                    Line::from("Keybindings:"),
+                    Line::from(""),
+                    Line::from("  q              Quit"),
+                    Line::from("  Tab / BackTab  Switch between Traces and Errors"),
+                    Line::from("  ↑ / ↓  or k/j  Scroll up/down"),
+                    Line::from("  ← / →  or h/l  Scroll left/right (horizontal)"),
+                    Line::from("  PgUp / PgDn    Page up/down"),
+                    Line::from("  Home / End     Jump to start/end"),
+                    Line::from("  ?              Toggle this help"),
+                    Line::from("  Esc            Close this help"),
+                    Line::from(""),
+                ];
+
+                let help_block = Block::default()
+                    .title(" Help ")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Thick)
+                    .border_style(Style::default().fg(Color::Cyan));
+
+                let help_paragraph = Paragraph::new(help_text)
+                    .block(help_block)
+                    .alignment(Alignment::Left);
+
+                let area = centered_rect(60, 50, f.area());
+                f.render_widget(Clear, area);
+                f.render_widget(help_paragraph, area);
+            }
         })?;
     }
 

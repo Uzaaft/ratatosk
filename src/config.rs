@@ -69,32 +69,30 @@ impl FieldConfig {
     }
 }
 
-pub fn load() -> FieldConfig {
-    let args: Vec<String> = env::args().collect();
-    
+pub fn load(config_path: Option<&str>) -> FieldConfig {
     let mut route_field: Option<String> = None;
     let mut latency_field: Option<String> = None;
     let mut latency_scale: Option<u64> = None;
-    let mut config_file: Option<String> = None;
 
-    for arg in args.iter().skip(1) {
-        if let Some(value) = arg.strip_prefix("--route-field=") {
-            route_field = Some(value.to_string());
-        } else if let Some(value) = arg.strip_prefix("--latency-field=") {
-            latency_field = Some(value.to_string());
-        } else if let Some(value) = arg.strip_prefix("--latency-scale=") {
-            latency_scale = value.parse().ok();
-        } else if let Some(value) = arg.strip_prefix("--config=") {
-            config_file = Some(value.to_string());
-        }
-    }
-
-    if let Some(path) = config_file {
-        if let Ok(content) = fs::read_to_string(&path) {
+    if let Some(path) = config_path {
+        if let Ok(content) = fs::read_to_string(path) {
             if let Ok(file_cfg) = serde_json::from_str::<FileConfig>(&content) {
-                route_field = route_field.or(file_cfg.route_field);
-                latency_field = latency_field.or(file_cfg.latency_field);
-                latency_scale = latency_scale.or(file_cfg.latency_scale);
+                route_field = file_cfg.route_field;
+                latency_field = file_cfg.latency_field;
+                latency_scale = file_cfg.latency_scale;
+            }
+        }
+    } else {
+        let default_path = env::var("HOME")
+            .map(|h| format!("{}/.config/ratatosk/config.json", h))
+            .ok();
+        if let Some(path) = default_path {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(file_cfg) = serde_json::from_str::<FileConfig>(&content) {
+                    route_field = file_cfg.route_field;
+                    latency_field = file_cfg.latency_field;
+                    latency_scale = file_cfg.latency_scale;
+                }
             }
         }
     }
