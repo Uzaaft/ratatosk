@@ -1,3 +1,6 @@
+mod config;
+
+use config::FieldConfig;
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
@@ -11,9 +14,8 @@ use ratatui::{
     text::Span,
     widgets::{BarChart, Block, BorderType, Borders, List, ListItem},
 };
-use serde::Deserialize;
+
 use std::{
-    borrow::Cow,
     collections::{HashMap, VecDeque},
     io::{self, BufRead},
     sync::mpsc,
@@ -33,12 +35,7 @@ enum Section {
     Errors,
 }
 
-#[derive(Deserialize)]
-struct JsonLatencyEvent<'a> {
-    #[serde(borrow)]
-    route: Option<Cow<'a, str>>,
-    latency: Option<u64>,
-}
+
 
 #[inline]
 fn likely_json_object(s: &str) -> bool {
@@ -109,6 +106,7 @@ impl RouteStats {
 }
 
 struct App {
+    cfg: FieldConfig,
     traces: VecDeque<String>,
     latencies: HashMap<String, RouteStats>,
     errors: VecDeque<String>,
@@ -128,8 +126,9 @@ struct App {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(cfg: FieldConfig) -> Self {
         Self {
+            cfg,
             traces: VecDeque::with_capacity(1000),
             latencies: HashMap::new(),
             errors: VecDeque::with_capacity(500),
@@ -350,26 +349,33 @@ impl App {
         }
 
         if likely_json_object(&line) {
-            if let Ok(evt) = serde_json::from_str::<JsonLatencyEvent>(&line) {
-                if let (Some(route), Some(latency)) = (evt.route.as_deref(), evt.latency) {
-                    self.add_latency(route, latency);
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                if let (Some(route), Some(latency)) = (
+                    self.cfg.extract_route(&json),
+                    self.cfg.extract_latency(&json),
+                ) {
+                    self.add_latency(&route, latency);
                     return;
                 }
             }
         }
 
-        if let Some(start) = line.find("route=") {
-            let rest = &line[start + 6..];
+        let route_key = format!("{}=", self.cfg.route_field_raw);
+        let latency_key = format!("{}=", self.cfg.latency_field_raw);
+
+        if let Some(start) = line.find(&route_key) {
+            let rest = &line[start + route_key.len()..];
             let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
             let route = &rest[..end];
 
-            if let Some(lat) = line.find("latency=") {
-                let lat_str = &line[lat + 8..];
+            if let Some(lat) = line.find(&latency_key) {
+                let lat_str = &line[lat + latency_key.len()..];
                 let end = lat_str
                     .find(|c: char| !c.is_numeric())
                     .unwrap_or(lat_str.len());
-                if let Ok(latency) = lat_str[..end].parse() {
-                    self.add_latency(route, latency);
+                if let Ok(latency) = lat_str[..end].parse::<u64>() {
+                    let scaled = latency / self.cfg.latency_scale.max(1);
+                    self.add_latency(route, scaled);
                 }
             }
         }
@@ -442,7 +448,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let mut app = App::new();
+    let cfg = config::load();
+    let mut app = App::new(cfg);
 
     'main: loop {
         let first = match rx.recv() {
@@ -561,11 +568,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|(route, avg)| (route.as_str(), *avg))
                 .collect();
 
+            let bar_title = format!(
+                "Route Latencies (avg) [{}={}, {}={}]",
+                app.cfg.route_field_raw,
+                if app.cfg.route_path.segments.len() > 1 { "nested" } else { "flat" },
+                app.cfg.latency_field_raw,
+                if app.cfg.latency_scale == 1 { "ms" } else { &format!("/{}", app.cfg.latency_scale) }
+            );
+
             let barchart = BarChart::default()
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title("API Route Latencies (avg ms)"),
+                        .title(bar_title),
                 )
                 .data(&bar_data)
                 .bar_width(9)
