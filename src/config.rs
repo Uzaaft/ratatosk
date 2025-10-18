@@ -67,6 +67,16 @@ impl FieldConfig {
         })
         .map(|lat| lat / self.latency_scale.max(1))
     }
+
+    pub fn update_route_field(&mut self, field: &str) {
+        self.route_field_raw = field.to_string();
+        self.route_path = FieldPath::parse(field);
+    }
+
+    pub fn update_latency_field(&mut self, field: &str) {
+        self.latency_field_raw = field.to_string();
+        self.latency_path = FieldPath::parse(field);
+    }
 }
 
 pub fn load(config_path: Option<&str>) -> FieldConfig {

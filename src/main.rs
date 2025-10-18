@@ -24,6 +24,7 @@ use std::{
 };
 
 const MAX_SAMPLES: usize = 128;
+const MAX_KEYS: usize = 5000;
 #[derive(Parser)]
 #[command(name = "ratatosk")]
 #[command(version, about = "A TUI log monitoring application", long_about = None)]
@@ -42,6 +43,22 @@ enum AppEvent {
 enum Section {
     Traces,
     Errors,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum ConfigStep {
+    Route,
+    Latency,
+    Scale,
+}
+
+struct ConfigState {
+    step: ConfigStep,
+    route_input: String,
+    latency_input: String,
+    scale_input: String,
+    suggestions: Vec<String>,
+    selected_idx: usize,
 }
 
 
@@ -133,6 +150,9 @@ struct App {
     errors_view_cols: usize,
     errors_max_line_width: usize,
     show_help: bool,
+    json_key_freq: HashMap<String, usize>,
+    show_config: bool,
+    config_state: Option<ConfigState>,
 }
 
 impl App {
@@ -156,6 +176,9 @@ impl App {
             errors_view_cols: 0,
             errors_max_line_width: 0,
             show_help: false,
+            json_key_freq: HashMap::new(),
+            show_config: false,
+            config_state: None,
         }
     }
 
@@ -317,6 +340,7 @@ impl App {
 
         match code {
             KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('c') => self.open_config(),
             KeyCode::Tab | KeyCode::BackTab => self.toggle_section(),
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),
@@ -370,6 +394,8 @@ impl App {
 
         if likely_json_object(&line) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                self.collect_json_paths(&json, String::new());
+                
                 if let (Some(route), Some(latency)) = (
                     self.cfg.extract_route(&json),
                     self.cfg.extract_latency(&json),
@@ -377,6 +403,18 @@ impl App {
                     self.add_latency(&route, latency);
                     return;
                 }
+            }
+        } else {
+            let mut start = 0;
+            while let Some(eq_pos) = line[start..].find('=') {
+                let before = &line[..start + eq_pos];
+                if let Some(key_start) = before.rfind(|c: char| c.is_whitespace()) {
+                    let key = before[key_start + 1..].trim();
+                    if !key.is_empty() && self.json_key_freq.len() < MAX_KEYS {
+                        *self.json_key_freq.entry(key.to_owned()).or_insert(0) += 1;
+                    }
+                }
+                start += eq_pos + 1;
             }
         }
 
@@ -422,6 +460,238 @@ impl App {
             .collect();
 
         self.bar_cache_dirty = false;
+    }
+
+    fn collect_json_paths(&mut self, v: &serde_json::Value, prefix: String) {
+        if self.json_key_freq.len() >= MAX_KEYS {
+            return;
+        }
+        
+        match v {
+            serde_json::Value::Object(map) => {
+                for (key, val) in map {
+                    let path = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{}.{}", prefix, key)
+                    };
+                    *self.json_key_freq.entry(path.clone()).or_insert(0) += 1;
+                    self.collect_json_paths(val, path);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for (idx, val) in arr.iter().enumerate() {
+                    let path = format!("{}[{}]", prefix, idx);
+                    self.collect_json_paths(val, path);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn build_suggestions(&self, prefix: &str, limit: usize) -> Vec<String> {
+        let mut matched: Vec<(&String, &usize)> = self
+            .json_key_freq
+            .iter()
+            .filter(|(k, _)| k.starts_with(prefix))
+            .collect();
+        
+        matched.sort_by(|a, b| {
+            b.1.cmp(a.1).then_with(|| a.0.cmp(b.0))
+        });
+        
+        matched
+            .into_iter()
+            .take(limit)
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    fn open_config(&mut self) {
+        let suggestions = self.build_suggestions("", 10);
+        self.config_state = Some(ConfigState {
+            step: ConfigStep::Route,
+            route_input: String::new(),
+            latency_input: String::new(),
+            scale_input: String::new(),
+            suggestions,
+            selected_idx: 0,
+        });
+        self.show_config = true;
+    }
+
+    fn apply_config_changes(&mut self) {
+        if let Some(state) = &self.config_state {
+            if !state.route_input.is_empty() {
+                self.cfg.update_route_field(&state.route_input);
+            }
+            if !state.latency_input.is_empty() {
+                self.cfg.update_latency_field(&state.latency_input);
+            }
+            if !state.scale_input.is_empty() {
+                if let Ok(scale) = state.scale_input.parse::<u64>() {
+                    self.cfg.latency_scale = scale;
+                }
+            }
+            
+            self.latencies.clear();
+            self.bar_cache_dirty = true;
+        }
+        self.config_state = None;
+        self.show_config = false;
+    }
+
+    fn handle_config_key(&mut self, code: KeyCode) {
+        if self.config_state.is_none() {
+            return;
+        }
+
+        match code {
+            KeyCode::Esc => {
+                self.show_config = false;
+                self.config_state = None;
+            }
+            KeyCode::Up => {
+                if let Some(state) = &mut self.config_state {
+                    if !state.suggestions.is_empty() {
+                        state.selected_idx = if state.selected_idx == 0 {
+                            state.suggestions.len() - 1
+                        } else {
+                            state.selected_idx - 1
+                        };
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if let Some(state) = &mut self.config_state {
+                    if !state.suggestions.is_empty() {
+                        state.selected_idx = (state.selected_idx + 1) % state.suggestions.len();
+                    }
+                }
+            }
+            KeyCode::Tab | KeyCode::Right => {
+                if let Some(state) = &mut self.config_state {
+                    if !state.suggestions.is_empty() && state.selected_idx < state.suggestions.len() {
+                        let suggestion = state.suggestions[state.selected_idx].clone();
+                        match state.step {
+                            ConfigStep::Route => state.route_input = suggestion,
+                            ConfigStep::Latency => state.latency_input = suggestion,
+                            ConfigStep::Scale => {}
+                        }
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(state) = &self.config_state {
+                    match state.step {
+                        ConfigStep::Route => {
+                            let input = state.latency_input.clone();
+                            let suggestions = self.build_suggestions(&input, 10);
+                            if let Some(state) = &mut self.config_state {
+                                state.step = ConfigStep::Latency;
+                                state.selected_idx = 0;
+                                state.suggestions = suggestions;
+                            }
+                        }
+                        ConfigStep::Latency => {
+                            if let Some(state) = &mut self.config_state {
+                                state.step = ConfigStep::Scale;
+                                state.suggestions.clear();
+                                state.selected_idx = 0;
+                            }
+                        }
+                        ConfigStep::Scale => {
+                            self.apply_config_changes();
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(state) = &self.config_state {
+                    let (step, input, suggestions) = match state.step {
+                        ConfigStep::Route => {
+                            let mut input = state.route_input.clone();
+                            input.pop();
+                            let suggestions = self.build_suggestions(&input, 10);
+                            (ConfigStep::Route, input, Some(suggestions))
+                        }
+                        ConfigStep::Latency => {
+                            let mut input = state.latency_input.clone();
+                            input.pop();
+                            let suggestions = self.build_suggestions(&input, 10);
+                            (ConfigStep::Latency, input, Some(suggestions))
+                        }
+                        ConfigStep::Scale => {
+                            let mut input = state.scale_input.clone();
+                            input.pop();
+                            (ConfigStep::Scale, input, None)
+                        }
+                    };
+                    
+                    if let Some(state) = &mut self.config_state {
+                        match step {
+                            ConfigStep::Route => {
+                                state.route_input = input;
+                                state.suggestions = suggestions.unwrap();
+                                state.selected_idx = 0;
+                            }
+                            ConfigStep::Latency => {
+                                state.latency_input = input;
+                                state.suggestions = suggestions.unwrap();
+                                state.selected_idx = 0;
+                            }
+                            ConfigStep::Scale => {
+                                state.scale_input = input;
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(state) = &self.config_state {
+                    let (step, input, suggestions) = match state.step {
+                        ConfigStep::Route => {
+                            let mut input = state.route_input.clone();
+                            input.push(c);
+                            let suggestions = self.build_suggestions(&input, 10);
+                            (ConfigStep::Route, input, Some(suggestions))
+                        }
+                        ConfigStep::Latency => {
+                            let mut input = state.latency_input.clone();
+                            input.push(c);
+                            let suggestions = self.build_suggestions(&input, 10);
+                            (ConfigStep::Latency, input, Some(suggestions))
+                        }
+                        ConfigStep::Scale => {
+                            let mut input = state.scale_input.clone();
+                            if c.is_ascii_digit() {
+                                input.push(c);
+                            }
+                            (ConfigStep::Scale, input, None)
+                        }
+                    };
+                    
+                    if let Some(state) = &mut self.config_state {
+                        match step {
+                            ConfigStep::Route => {
+                                state.route_input = input;
+                                state.suggestions = suggestions.unwrap();
+                                state.selected_idx = 0;
+                            }
+                            ConfigStep::Latency => {
+                                state.latency_input = input;
+                                state.suggestions = suggestions.unwrap();
+                                state.selected_idx = 0;
+                            }
+                            ConfigStep::Scale => {
+                                state.scale_input = input;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -503,8 +773,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match first {
             AppEvent::LogLine(line) => app.parse_log_line(line),
             AppEvent::Input(Event::Key(key)) => match key.code {
-                KeyCode::Char('q') => quit = true,
-                other => app.handle_nav_key(other),
+                KeyCode::Char('q') if !app.show_config => quit = true,
+                other => {
+                    if app.show_config {
+                        app.handle_config_key(other);
+                    } else {
+                        app.handle_nav_key(other);
+                    }
+                }
             },
             AppEvent::Input(_) => {}
         }
@@ -516,11 +792,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match ev {
                 AppEvent::LogLine(line) => app.parse_log_line(line),
                 AppEvent::Input(Event::Key(key)) => match key.code {
-                    KeyCode::Char('q') => {
+                    KeyCode::Char('q') if !app.show_config => {
                         quit = true;
                         break;
                     }
-                    other => app.handle_nav_key(other),
+                    other => {
+                        if app.show_config {
+                            app.handle_config_key(other);
+                        } else {
+                            app.handle_nav_key(other);
+                        }
+                    }
                 },
                 AppEvent::Input(_) => {}
             }
@@ -669,6 +951,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let errors_widget = List::new(error_items).block(errors_block);
             f.render_widget(errors_widget, chunks[2]);
+
+            if app.show_config {
+                if let Some(state) = &app.config_state {
+                    let area = centered_rect(70, 60, f.area());
+                    f.render_widget(Clear, area);
+
+                    let config_block = Block::default()
+                        .title("Configure Fields — Esc to cancel")
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Thick)
+                        .border_style(Style::default().fg(Color::Cyan));
+
+                    let inner = config_block.inner(area);
+                    f.render_widget(config_block, area);
+
+                    let (label, input, show_suggestions) = match state.step {
+                        ConfigStep::Route => ("Route field (JSON path):", &state.route_input, true),
+                        ConfigStep::Latency => ("Latency field (JSON path):", &state.latency_input, true),
+                        ConfigStep::Scale => ("Latency scale (divisor, min 1):", &state.scale_input, false),
+                    };
+
+                    let mut content_lines = vec![
+                        Line::from(""),
+                        Line::from(label),
+                        Line::from(format!("{}_", input)),
+                        Line::from(""),
+                    ];
+
+                    if show_suggestions && !state.suggestions.is_empty() {
+                        content_lines.push(Line::from("Suggestions:"));
+                        for (idx, suggestion) in state.suggestions.iter().take(10).enumerate() {
+                            let style = if idx == state.selected_idx {
+                                Style::default().fg(Color::Cyan)
+                            } else {
+                                Style::default()
+                            };
+                            content_lines.push(Line::from(Span::styled(format!("  {}", suggestion), style)));
+                        }
+                        content_lines.push(Line::from(""));
+                    }
+
+                    content_lines.push(Line::from(""));
+                    content_lines.push(Line::from("Tab/→: accept suggestion | ↑/↓: navigate | Enter: next/apply"));
+
+                    let content_paragraph = Paragraph::new(content_lines)
+                        .alignment(Alignment::Left);
+
+                    f.render_widget(content_paragraph, inner);
+                }
+            }
 
             if app.show_help {
                 let help_text = vec![
