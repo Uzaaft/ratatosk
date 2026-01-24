@@ -33,7 +33,6 @@ struct Cli {
     config: Option<String>,
 }
 
-
 enum AppEvent {
     LogLine(String),
     Input(Event),
@@ -61,9 +60,6 @@ struct ConfigState {
     selected_idx: usize,
 }
 
-
-
-#[inline]
 fn likely_json_object(s: &str) -> bool {
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -330,7 +326,6 @@ impl App {
     }
 
     fn handle_nav_key(&mut self, code: KeyCode) {
-        // Handle '?' to toggle help (do this BEFORE checking show_help)
         match code {
             KeyCode::Char('?') => {
                 self.show_help = !self.show_help;
@@ -343,7 +338,6 @@ impl App {
             _ => {}
         }
 
-        // If help is showing, don't process other keys
         if self.show_help {
             return;
         }
@@ -782,12 +776,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match first {
             AppEvent::LogLine(line) => app.parse_log_line(line),
             AppEvent::Input(Event::Key(key)) => {
-                // Only handle Press events (ignore Release and Repeat)
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
                 
-                // Only skip if CONTROL or ALT (but not SHIFT alone)
                 let has_ctrl_or_alt = key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
                 
                 if !has_ctrl_or_alt {
@@ -813,12 +805,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match ev {
                 AppEvent::LogLine(line) => app.parse_log_line(line),
                 AppEvent::Input(Event::Key(key)) => {
-                    // Only handle Press events (ignore Release and Repeat)
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
                     
-                    // Only skip if CONTROL or ALT (but not SHIFT alone)
                     let has_ctrl_or_alt = key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
                     
                     if !has_ctrl_or_alt {
